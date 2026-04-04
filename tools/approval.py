@@ -812,12 +812,17 @@ def check_all_command_guards(command: str, env_type: str,
 
             # User approved — persist based on scope (same logic as CLI)
             for key, _, is_tirith in warnings:
-                if choice in ("once", "session") or (choice == "always" and is_tirith):
+                if choice == "session" or (choice == "always" and is_tirith):
+                    # "session" or tirith+always: approve for this session only
                     approve_session(session_key, key)
                 elif choice == "always":
+                    # "always" for dangerous patterns: permanent
                     approve_session(session_key, key)
                     approve_permanent(key)
                     save_permanent_allowlist(_permanent_approved)
+                # "once": no approve_session() — approval is implicit in the
+                # return value below. The next command with the same pattern
+                # will prompt again, matching the CLI's one-time-only behavior.
 
             return {"approved": True, "message": None}
 
