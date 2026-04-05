@@ -64,7 +64,9 @@ import time
 import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from agent.auxiliary_client import call_llm
+from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 
 try:
@@ -137,6 +139,40 @@ DEFAULT_SESSION_TIMEOUT = 300
 # Max tokens for snapshot content before summarization
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
+_SENSITIVE_URL_QUERY_PARAM_RE = re.compile(
+    r"([?&](?:access_token|auth_token|token|api_key|client_secret|secret|password)=)([^&#\s]+)",
+    re.IGNORECASE,
+)
+_URL_USERINFO_PASSWORD_RE = re.compile(
+    r"(((?:https?|wss?)://[^/\s:@]+:))([^@/\s]+)(@)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_url_for_logs(value: object) -> str:
+    """Mask secrets in logged browser endpoint URLs and URL-like errors."""
+    text = redact_sensitive_text(value)
+    if not text:
+        return text
+
+    text = _SENSITIVE_URL_QUERY_PARAM_RE.sub(r"\1***", text)
+    text = _URL_USERINFO_PASSWORD_RE.sub(r"\1***\4", text)
+
+    try:
+        parts = urlsplit(text)
+    except Exception:
+        return text
+
+    if parts.password is None:
+        return text
+
+    netloc = parts.hostname or ""
+    if parts.username:
+        netloc = f"{parts.username}:***@{netloc}"
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
 
 def _get_command_timeout() -> int:
     """Return the configured browser command timeout from config.yaml.
@@ -206,15 +242,27 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
-        logger.warning("Failed to resolve CDP endpoint %s via %s: %s", raw, version_url, exc)
+        logger.warning(
+            "Failed to resolve CDP endpoint %s via %s: %s",
+            _sanitize_url_for_logs(raw),
+            _sanitize_url_for_logs(version_url),
+            _sanitize_url_for_logs(exc),
+        )
         return raw
 
     ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
     if ws_url:
-        logger.info("Resolved CDP endpoint %s -> %s", raw, ws_url)
+        logger.info(
+            "Resolved CDP endpoint %s -> %s",
+            _sanitize_url_for_logs(raw),
+            _sanitize_url_for_logs(ws_url),
+        )
         return ws_url
 
-    logger.warning("CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint", version_url)
+    logger.warning(
+        "CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint",
+        _sanitize_url_for_logs(version_url),
+    )
     return raw
 
 
