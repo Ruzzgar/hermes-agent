@@ -14,11 +14,26 @@ import copy
 import json
 import logging
 import os
+import stat
+import threading
+import time
 from pathlib import Path
+from contextlib import contextmanager
 
 from hermes_constants import get_hermes_home
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from utils import atomic_json_write
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 try:
     import anthropic as _anthropic_sdk
@@ -109,6 +124,8 @@ _OAUTH_ONLY_BETAS = [
 # when the spoofed user-agent version is too far behind the actual release.
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
+_HERMES_OAUTH_LOCK_TIMEOUT_SECONDS = 10.0
+_hermes_oauth_lock_holder = threading.local()
 
 
 def _detect_claude_code_version() -> str:
@@ -429,9 +446,7 @@ def _write_claude_code_credentials(
         existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
-        cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-        # Restrict permissions (credentials file)
-        cred_path.chmod(0o600)
+        _atomic_write_credentials_json(cred_path, existing)
     except (OSError, IOError) as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 
@@ -597,6 +612,85 @@ _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 _HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
 
 
+def _hermes_oauth_lock_path() -> Path:
+    return _HERMES_OAUTH_FILE.with_suffix(".lock")
+
+
+@contextmanager
+def _hermes_oauth_store_lock(timeout_seconds: float = _HERMES_OAUTH_LOCK_TIMEOUT_SECONDS):
+    """Cross-process advisory lock for Hermes-managed Anthropic OAuth state."""
+    if getattr(_hermes_oauth_lock_holder, "depth", 0) > 0:
+        _hermes_oauth_lock_holder.depth += 1
+        try:
+            yield
+        finally:
+            _hermes_oauth_lock_holder.depth -= 1
+        return
+
+    lock_path = _hermes_oauth_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if fcntl is None and msvcrt is None:
+        _hermes_oauth_lock_holder.depth = 1
+        try:
+            yield
+        finally:
+            _hermes_oauth_lock_holder.depth = 0
+        return
+
+    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        lock_path.write_text(" ", encoding="utf-8")
+
+    with lock_path.open("r+" if msvcrt else "a+") as lock_file:
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while True:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except (BlockingIOError, OSError, PermissionError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Timed out waiting for Anthropic OAuth lock")
+                time.sleep(0.05)
+
+        _hermes_oauth_lock_holder.depth = 1
+        try:
+            yield
+        finally:
+            _hermes_oauth_lock_holder.depth = 0
+            if fcntl:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            elif msvcrt:
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+
+
+def _atomic_write_credentials_json(path: Path, data: Dict[str, Any]) -> None:
+    """Persist credential JSON atomically and keep it owner-readable only."""
+    atomic_json_write(path, data)
+    try:
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
+def _read_hermes_oauth_credentials_unlocked() -> Optional[Dict[str, Any]]:
+    if _HERMES_OAUTH_FILE.exists():
+        try:
+            data = json.loads(_HERMES_OAUTH_FILE.read_text(encoding="utf-8"))
+            if data.get("accessToken"):
+                return data
+        except (json.JSONDecodeError, OSError, IOError) as e:
+            logger.debug("Failed to read Hermes OAuth credentials: %s", e)
+    return None
+
+
 def _generate_pkce() -> tuple:
     """Generate PKCE code_verifier and code_challenge (S256)."""
     import base64
@@ -739,23 +833,21 @@ def _save_hermes_oauth_credentials(access_token: str, refresh_token: str, expire
         "expiresAt": expires_at_ms,
     }
     try:
-        _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HERMES_OAUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        _HERMES_OAUTH_FILE.chmod(0o600)
-    except (OSError, IOError) as e:
+        with _hermes_oauth_store_lock():
+            _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_credentials_json(_HERMES_OAUTH_FILE, data)
+    except (OSError, IOError, TimeoutError) as e:
         logger.debug("Failed to save Hermes OAuth credentials: %s", e)
 
 
 def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
     """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
-    if _HERMES_OAUTH_FILE.exists():
-        try:
-            data = json.loads(_HERMES_OAUTH_FILE.read_text(encoding="utf-8"))
-            if data.get("accessToken"):
-                return data
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read Hermes OAuth credentials: %s", e)
-    return None
+    try:
+        with _hermes_oauth_store_lock():
+            return _read_hermes_oauth_credentials_unlocked()
+    except TimeoutError as e:
+        logger.debug("Failed to read Hermes OAuth credentials: %s", e)
+        return None
 
 
 def refresh_hermes_oauth_token() -> Optional[str]:
@@ -763,20 +855,24 @@ def refresh_hermes_oauth_token() -> Optional[str]:
 
     Returns the new access token, or None if refresh fails.
     """
-    creds = read_hermes_oauth_credentials()
-    if not creds or not creds.get("refreshToken"):
-        return None
-
     try:
-        refreshed = refresh_anthropic_oauth_pure(
-            creds["refreshToken"],
-            use_json=True,
-        )
-        _save_hermes_oauth_credentials(
-            refreshed["access_token"],
-            refreshed["refresh_token"],
-            refreshed["expires_at_ms"],
-        )
+        with _hermes_oauth_store_lock():
+            creds = _read_hermes_oauth_credentials_unlocked()
+            if not creds or not creds.get("refreshToken"):
+                return None
+
+            refreshed = refresh_anthropic_oauth_pure(
+                creds["refreshToken"],
+                use_json=True,
+            )
+            _atomic_write_credentials_json(
+                _HERMES_OAUTH_FILE,
+                {
+                    "accessToken": refreshed["access_token"],
+                    "refreshToken": refreshed["refresh_token"],
+                    "expiresAt": refreshed["expires_at_ms"],
+                },
+            )
         _write_claude_code_credentials(
             refreshed["access_token"],
             refreshed["refresh_token"],

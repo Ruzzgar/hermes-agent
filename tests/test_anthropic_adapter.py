@@ -3,10 +3,11 @@
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+import agent.anthropic_adapter as anthropic_adapter
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_oauth_token,
@@ -325,6 +326,40 @@ class TestWriteClaudeCodeCredentials:
         data = json.loads(cred_file.read_text())
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
+
+
+class TestHermesOAuthCredentials:
+    def test_round_trips_saved_credentials(self, tmp_path, monkeypatch):
+        oauth_path = tmp_path / ".anthropic_oauth.json"
+        monkeypatch.setattr(anthropic_adapter, "_HERMES_OAUTH_FILE", oauth_path)
+
+        anthropic_adapter._save_hermes_oauth_credentials("tok", "ref", 12345)
+
+        data = anthropic_adapter.read_hermes_oauth_credentials()
+        assert data is not None
+        assert data["accessToken"] == "tok"
+        assert data["refreshToken"] == "ref"
+        assert data["expiresAt"] == 12345
+
+    def test_save_keeps_previous_json_readable_until_atomic_replace(self, tmp_path, monkeypatch):
+        oauth_path = tmp_path / ".anthropic_oauth.json"
+        monkeypatch.setattr(anthropic_adapter, "_HERMES_OAUTH_FILE", oauth_path)
+        anthropic_adapter._save_hermes_oauth_credentials("old-token", "old-refresh", 111)
+
+        seen_during_write = []
+        real_atomic_json_write = anthropic_adapter.atomic_json_write
+
+        def spy_atomic_json_write(path, data, *args, **kwargs):
+            seen_during_write.append(anthropic_adapter.read_hermes_oauth_credentials())
+            return real_atomic_json_write(path, data, *args, **kwargs)
+
+        monkeypatch.setattr(anthropic_adapter, "atomic_json_write", spy_atomic_json_write)
+
+        anthropic_adapter._save_hermes_oauth_credentials("new-token", "new-refresh", 222)
+
+        assert seen_during_write
+        assert seen_during_write[0]["accessToken"] == "old-token"
+        assert anthropic_adapter.read_hermes_oauth_credentials()["accessToken"] == "new-token"
 
 
 class TestResolveWithRefresh:
