@@ -40,6 +40,7 @@ import re
 import socket
 import sys
 import threading
+import tempfile
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -157,11 +158,19 @@ def _read_json(path: Path) -> dict | None:
 def _write_json(path: Path, data: dict) -> None:
     """Write a dict as JSON with restricted permissions (0o600)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    tmp = Path(tmp_name)
     try:
-        tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, indent=2, default=str))
+            handle.flush()
+            os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
-        tmp.rename(path)
+        os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)
         raise

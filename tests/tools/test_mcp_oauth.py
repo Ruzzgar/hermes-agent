@@ -67,6 +67,40 @@ class TestHermesTokenStorage:
         client_path = tmp_path / "mcp-tokens" / "test-server.client.json"
         assert client_path.exists()
 
+    def test_set_tokens_overwrites_existing_file_when_rename_cannot_replace(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("test-server")
+        import asyncio
+
+        original_rename = Path.rename
+
+        def windows_style_rename(self, target):
+            if Path(target).exists():
+                raise FileExistsError("destination exists")
+            return original_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", windows_style_rename)
+
+        first_token = MagicMock()
+        first_token.model_dump.return_value = {
+            "access_token": "first-token",
+            "token_type": "Bearer",
+        }
+        second_token = MagicMock()
+        second_token.model_dump.return_value = {
+            "access_token": "second-token",
+            "token_type": "Bearer",
+        }
+
+        asyncio.run(storage.set_tokens(first_token))
+        asyncio.run(storage.set_tokens(second_token))
+
+        token_path = tmp_path / "mcp-tokens" / "test-server.json"
+        data = json.loads(token_path.read_text())
+        assert data["access_token"] == "second-token"
+
     def test_remove_cleans_up(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("test-server")
