@@ -41,6 +41,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from gateway.platforms.base import SendResult  # noqa: E402
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 
@@ -78,3 +79,30 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
     assert channel.send.await_count == 2
     assert send_calls[0]["reference"] is ref_msg
     assert send_calls[1]["reference"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_image_blocks_unsafe_urls_before_download(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(),
+        fetch_channel=AsyncMock(),
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="fallback"))
+    monkeypatch.setattr("gateway.platforms.discord.is_safe_url", lambda _url: False)
+
+    result = await adapter.send_image(
+        "555",
+        "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        "blocked",
+    )
+
+    assert result.success is True
+    assert result.message_id == "fallback"
+    adapter._client.get_channel.assert_not_called()
+    adapter._client.fetch_channel.assert_not_awaited()
+    adapter.send.assert_awaited_once_with(
+        chat_id="555",
+        content="blocked\nhttp://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        reply_to=None,
+    )
