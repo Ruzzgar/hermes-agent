@@ -35,6 +35,14 @@ GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
 )
 
+_MEDIA_TAG_ALLOWED_EXTS = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+    ".ogg", ".opus", ".mp3", ".wav", ".m4a",
+})
+_MEDIA_TAG_REMOTE_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
+_MEDIA_TAG_WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
 
 def _safe_url_for_log(url: str, max_len: int = 80) -> str:
     """Return a URL string safe for logs (no query/fragment/userinfo)."""
@@ -845,6 +853,34 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
     @staticmethod
+    def _normalize_media_tag_path(raw_path: str) -> Optional[str]:
+        """Normalize and validate MEDIA: path values before attachment sends."""
+        if not raw_path:
+            return None
+
+        path = raw_path.strip()
+        if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+            path = path[1:-1].strip()
+        path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+        if not path:
+            return None
+
+        # Block remote URLs and keep MEDIA tags local-path only.
+        if _MEDIA_TAG_REMOTE_SCHEME_RE.match(path):
+            return None
+
+        expanded = os.path.expanduser(path)
+        is_abs = os.path.isabs(expanded) or bool(_MEDIA_TAG_WINDOWS_ABS_RE.match(expanded))
+        if not is_abs:
+            return None
+
+        ext = Path(expanded).suffix.lower()
+        if ext not in _MEDIA_TAG_ALLOWED_EXTS:
+            return None
+
+        return expanded
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -872,10 +908,9 @@ class BasePlatformAdapter(ABC):
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
-            path = match.group("path").strip()
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-                path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            path = BasePlatformAdapter._normalize_media_tag_path(
+                match.group("path").strip()
+            )
             if path:
                 media.append((path, has_voice_tag))
 

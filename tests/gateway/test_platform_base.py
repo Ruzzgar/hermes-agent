@@ -319,6 +319,14 @@ class TestExtractMedia:
         assert "Here" in cleaned
         assert "After" in cleaned
 
+    def test_media_tag_ignores_non_media_file_paths(self):
+        """Regression: MEDIA tags must not extract arbitrary local files."""
+        content = "MEDIA:'/etc/passwd'\nMEDIA:/tmp/secrets.env\nMEDIA:\"/tmp/report.txt\""
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        # Invalid tags remain plain text; only validated media paths are stripped.
+        assert "MEDIA:'/etc/passwd'" in cleaned
+
 
 # ---------------------------------------------------------------------------
 # truncate_message
