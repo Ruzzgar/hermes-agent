@@ -90,6 +90,15 @@ The webhook port defaults to `8080`. Override with:
 SMS_WEBHOOK_PORT=3000
 ```
 
+If the public webhook URL differs from Hermes' local listener address
+(for example when using ngrok, cloudflared, or a reverse proxy), also set:
+
+```bash
+SMS_WEBHOOK_URL=https://your-public-host/webhooks/twilio
+```
+
+Hermes uses this URL when validating Twilio's `X-Twilio-Signature`.
+
 ---
 
 ## Step 4: Start the Gateway
@@ -116,6 +125,7 @@ Text your Twilio number — Hermes will respond via SMS.
 | `TWILIO_AUTH_TOKEN` | Yes | Twilio Auth Token |
 | `TWILIO_PHONE_NUMBER` | Yes | Your Twilio phone number (E.164 format) |
 | `SMS_WEBHOOK_PORT` | No | Webhook listener port (default: `8080`) |
+| `SMS_WEBHOOK_URL` | No | Public webhook URL used for Twilio signature validation behind tunnels/proxies |
 | `SMS_ALLOWED_USERS` | No | Comma-separated E.164 phone numbers allowed to chat |
 | `SMS_ALLOW_ALL_USERS` | No | Set to `true` to allow anyone (not recommended) |
 | `SMS_HOME_CHANNEL` | No | Phone number for cron job / notification delivery |

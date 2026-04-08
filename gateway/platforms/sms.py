@@ -10,6 +10,7 @@ Shares credentials with the optional telephony skill — same env vars:
 
 Gateway-specific env vars:
   - SMS_WEBHOOK_PORT     (default 8080)
+  - SMS_WEBHOOK_URL      (optional public webhook URL for signature validation)
   - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
   - SMS_ALLOW_ALL_USERS  (true/false)
   - SMS_HOME_CHANNEL     (phone number for cron delivery)
@@ -17,6 +18,8 @@ Gateway-specific env vars:
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -77,6 +80,7 @@ class SmsAdapter(BasePlatformAdapter):
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
         )
+        self._webhook_url: str = (os.getenv("SMS_WEBHOOK_URL", "") or "").strip()
         self._runner = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
 
@@ -207,19 +211,80 @@ class SmsAdapter(BasePlatformAdapter):
     # Twilio webhook handler
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _first_header_value(value: str) -> str:
+        """Return the first value from a potentially comma-separated proxy header."""
+        return (value or "").split(",", 1)[0].strip()
+
+    def _webhook_request_url(self, request: Any) -> str:
+        """Reconstruct the public webhook URL used for Twilio signature validation."""
+        if self._webhook_url:
+            return self._webhook_url
+
+        forwarded_proto = self._first_header_value(request.headers.get("X-Forwarded-Proto", ""))
+        forwarded_host = self._first_header_value(request.headers.get("X-Forwarded-Host", ""))
+        scheme = forwarded_proto or getattr(request, "scheme", "") or "http"
+        host = forwarded_host or self._first_header_value(request.headers.get("Host", "")) or getattr(request, "host", "")
+        path_qs = getattr(getattr(request, "rel_url", None), "path_qs", "")
+
+        if host and path_qs:
+            return f"{scheme}://{host}{path_qs}"
+        return str(getattr(request, "url", ""))
+
+    def _compute_twilio_signature(self, url: str, form: Dict[str, list[str]]) -> str:
+        """Compute the expected X-Twilio-Signature for a form-encoded webhook."""
+        payload = url
+        for key in sorted(form):
+            values = form[key]
+            if isinstance(values, list):
+                normalized_values = sorted("" if value is None else str(value) for value in values)
+            else:
+                normalized_values = ["" if values is None else str(values)]
+            for value in normalized_values:
+                payload += key + value
+
+        digest = hmac.new(
+            self._auth_token.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha1,
+        ).digest()
+        return base64.b64encode(digest).decode("ascii")
+
+    def _is_twilio_signature_valid(self, request: Any, form: Dict[str, list[str]]) -> bool:
+        """Validate the webhook request using Twilio's HMAC signature."""
+        provided = (request.headers.get("X-Twilio-Signature", "") or "").strip()
+        if not provided:
+            return False
+
+        request_url = self._webhook_request_url(request)
+        if not request_url:
+            logger.warning("[sms] cannot reconstruct webhook URL for signature validation")
+            return False
+
+        expected = self._compute_twilio_signature(request_url, form)
+        return hmac.compare_digest(provided, expected)
+
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
         from aiohttp import web
 
         try:
             raw = await request.read()
             # Twilio sends form-encoded data, not JSON
-            form = urllib.parse.parse_qs(raw.decode("utf-8"))
+            form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
         except Exception as e:
             logger.error("[sms] webhook parse error: %s", e)
             return web.Response(
                 text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                 content_type="application/xml",
                 status=400,
+            )
+
+        if not self._is_twilio_signature_valid(request, form):
+            logger.warning("[sms] rejected webhook with invalid Twilio signature")
+            return web.Response(
+                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                content_type="application/xml",
+                status=403,
             )
 
         # Extract fields (parse_qs returns lists)
