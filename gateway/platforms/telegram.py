@@ -490,6 +490,21 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
             return False
+
+        webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+        webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+        if webhook_url and not webhook_secret:
+            message = (
+                "Telegram webhook mode requires TELEGRAM_WEBHOOK_SECRET. "
+                "Without it, any client that can reach the webhook endpoint can forge updates."
+            )
+            self._set_fatal_error(
+                "telegram_webhook_secret_required",
+                message,
+                retryable=False,
+            )
+            logger.error("[%s] %s", self.name, message)
+            return False
         
         try:
             from gateway.status import acquire_scoped_lock
@@ -577,15 +592,12 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._app.start()
 
             # Decide between webhook and polling mode
-            webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
-
             if webhook_url:
                 # ── Webhook mode ─────────────────────────────────────
                 # Telegram pushes updates to our HTTP endpoint.  This
                 # enables cloud platforms (Fly.io, Railway) to auto-wake
                 # suspended machines on inbound HTTP traffic.
                 webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
-                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None
                 from urllib.parse import urlparse
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 

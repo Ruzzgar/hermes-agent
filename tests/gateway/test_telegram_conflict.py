@@ -63,6 +63,27 @@ async def test_connect_rejects_same_host_token_lock(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connect_rejects_webhook_mode_without_secret(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
+
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://example.test/telegram")
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (_ for _ in ()).throw(
+            AssertionError("token lock should not be acquired before webhook secret validation")
+        ),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter.fatal_error_code == "telegram_webhook_secret_required"
+    assert adapter.has_fatal_error is True
+    assert "TELEGRAM_WEBHOOK_SECRET" in adapter.fatal_error_message
+
+
+@pytest.mark.asyncio
 async def test_polling_conflict_retries_before_fatal(monkeypatch):
     """A single 409 should trigger a retry, not an immediate fatal error."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
