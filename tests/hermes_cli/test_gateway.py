@@ -204,7 +204,7 @@ class TestWaitForGatewayExit:
         assert poll_count == 3
 
     def test_force_kills_after_grace_period(self, monkeypatch):
-        """When the process doesn't exit, SIGKILL the saved PID."""
+        """When the process doesn't exit, use the platform force-kill signal."""
         import time as _time
 
         # Simulate monotonic time advancing past force_after
@@ -230,10 +230,11 @@ class TestWaitForGatewayExit:
         monkeypatch.setattr("os.kill", mock_kill)
 
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=5.0)
-        assert (42, signal.SIGKILL) in kills
+        expected_signal = signal.SIGTERM if gateway.is_windows() else signal.SIGKILL
+        assert (42, expected_signal) in kills
 
     def test_handles_process_already_gone_on_kill(self, monkeypatch):
-        """ProcessLookupError during SIGKILL is not fatal."""
+        """ProcessLookupError during force-kill is not fatal."""
         import time as _time
 
         call_num = 0
@@ -252,3 +253,15 @@ class TestWaitForGatewayExit:
 
         # Should not raise — ProcessLookupError means it's already gone.
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=2.0)
+
+
+def test_force_kill_pid_uses_sigterm_on_windows(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+
+    used = gateway._force_kill_pid(123)
+
+    assert used == "SIGTERM"
+    assert calls == [(123, signal.SIGTERM)]

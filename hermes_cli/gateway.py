@@ -185,6 +185,16 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
     return killed
 
 
+def _force_kill_pid(pid: int) -> str:
+    """Force-terminate a gateway PID using platform-safe signaling."""
+    if is_windows():
+        os.kill(pid, signal.SIGTERM)
+        return "SIGTERM"
+
+    os.kill(pid, signal.SIGKILL)
+    return "SIGKILL"
+
+
 def stop_profile_gateway() -> bool:
     """Stop only the gateway for the current profile (HERMES_HOME-scoped).
 
@@ -1201,8 +1211,8 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
         if not force_sent and time.monotonic() >= force_deadline:
             # Grace period expired — force-kill the specific PID.
             try:
-                os.kill(pid, signal.SIGKILL)
-                print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
+                kill_signal = _force_kill_pid(pid)
+                print(f"⚠ Gateway PID {pid} did not exit gracefully; sent {kill_signal}")
             except (ProcessLookupError, PermissionError):
                 return  # Already gone or we can't touch it.
             force_sent = True
