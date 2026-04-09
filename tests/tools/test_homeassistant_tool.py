@@ -249,6 +249,34 @@ class TestDomainBlocklist:
     def test_blocked_domains_include_rest_command(self):
         assert "rest_command" in _BLOCKED_DOMAINS
 
+    @pytest.mark.parametrize(
+        ("domain", "service"),
+        [
+            ("script", "turn_on"),
+            ("automation", "trigger"),
+        ],
+    )
+    def test_indirect_execution_domains_are_blocked(self, domain, service, monkeypatch):
+        """Programmable HA workflows must not bypass the direct-domain blocklist."""
+        called = False
+
+        async def _fail_if_called(*args, **kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("network call should not happen for blocked workflow domains")
+
+        monkeypatch.setattr("tools.homeassistant_tool._async_call_service", _fail_if_called)
+
+        result = json.loads(_handle_call_service({
+            "domain": domain,
+            "service": service,
+            "entity_id": f"{domain}.unsafe_path",
+        }))
+
+        assert called is False
+        assert "error" in result
+        assert "blocked" in result["error"].lower()
+
 
 # ---------------------------------------------------------------------------
 # Security: entity_id validation

@@ -39,15 +39,18 @@ def _get_config():
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
 
 # Service domains blocked for security -- these allow arbitrary code/command
-# execution on the HA host or enable SSRF attacks on the local network.
+# execution on the HA host, SSRF attacks on the local network, or execution of
+# user-authored workflows that can call those dangerous primitives indirectly.
 # HA provides zero service-level access control; all safety must be in our layer.
 _BLOCKED_DOMAINS = frozenset({
+    "automation",       # user-authored workflows; automation.trigger can run unsafe actions
     "shell_command",    # arbitrary shell commands as root in HA container
     "command_line",     # sensors/switches that execute shell commands
     "python_script",    # sandboxed but can escalate via hass.services.call()
     "pyscript",         # scripting integration with broader access
     "hassio",           # addon control, host shutdown/reboot, stdin to containers
     "rest_command",     # HTTP requests from HA server (SSRF vector)
+    "script",           # user-authored workflows; script.turn_on can wrap blocked domains
 })
 
 
@@ -414,7 +417,7 @@ HA_CALL_SERVICE_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Service domain (e.g. 'light', 'switch', 'climate', "
-                    "'cover', 'media_player', 'fan', 'scene', 'script')."
+                    "'cover', 'media_player', 'fan', 'scene')."
                 ),
             },
             "service": {
