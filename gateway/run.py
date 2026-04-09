@@ -28,6 +28,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
+_IS_WINDOWS = sys.platform == "win32"
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -7476,6 +7478,65 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     logger.info("Cron ticker stopped")
 
 
+def _force_kill_signal():
+    """Return the strongest portable termination signal for this platform."""
+    return signal.SIGTERM if _IS_WINDOWS else signal.SIGKILL
+
+
+def _replace_existing_gateway(existing_pid: int) -> bool:
+    """Stop a stale gateway instance before starting a replacement."""
+    from gateway.status import remove_pid_file
+
+    logger.info(
+        "Replacing existing gateway instance (PID %d) with --replace.",
+        existing_pid,
+    )
+    try:
+        os.kill(existing_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # Already gone
+    except PermissionError:
+        logger.error(
+            "Permission denied killing PID %d. Cannot replace.",
+            existing_pid,
+        )
+        return False
+
+    # Wait up to 10 seconds for the old process to exit.
+    for _ in range(20):
+        try:
+            os.kill(existing_pid, 0)
+            time.sleep(0.5)
+        except (ProcessLookupError, PermissionError):
+            break  # Process is gone
+    else:
+        force_signal = _force_kill_signal()
+        logger.warning(
+            "Old gateway (PID %d) did not exit after SIGTERM, sending %s.",
+            existing_pid,
+            force_signal.name,
+        )
+        try:
+            os.kill(existing_pid, force_signal)
+            time.sleep(0.5)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    remove_pid_file()
+    # Also release all scoped locks left by the old process.
+    # Stopped (Ctrl+Z) processes don't release locks on exit,
+    # leaving stale lock files that block the new gateway from starting.
+    try:
+        from gateway.status import release_all_scoped_locks
+        _released = release_all_scoped_locks()
+        if _released:
+            logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
+    except Exception:
+        pass
+
+    return True
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -7495,54 +7556,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # The PID file is scoped to HERMES_HOME, so future multi-profile
     # setups (each profile using a distinct HERMES_HOME) will naturally
     # allow concurrent instances without tripping this guard.
-    import time as _time
-    from gateway.status import get_running_pid, remove_pid_file
+    from gateway.status import get_running_pid
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
-            logger.info(
-                "Replacing existing gateway instance (PID %d) with --replace.",
-                existing_pid,
-            )
-            try:
-                os.kill(existing_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass  # Already gone
-            except PermissionError:
-                logger.error(
-                    "Permission denied killing PID %d. Cannot replace.",
-                    existing_pid,
-                )
+            if not _replace_existing_gateway(existing_pid):
                 return False
-            # Wait up to 10 seconds for the old process to exit
-            for _ in range(20):
-                try:
-                    os.kill(existing_pid, 0)
-                    _time.sleep(0.5)
-                except (ProcessLookupError, PermissionError):
-                    break  # Process is gone
-            else:
-                # Still alive after 10s — force kill
-                logger.warning(
-                    "Old gateway (PID %d) did not exit after SIGTERM, sending SIGKILL.",
-                    existing_pid,
-                )
-                try:
-                    os.kill(existing_pid, signal.SIGKILL)
-                    _time.sleep(0.5)
-                except (ProcessLookupError, PermissionError):
-                    pass
-            remove_pid_file()
-            # Also release all scoped locks left by the old process.
-            # Stopped (Ctrl+Z) processes don't release locks on exit,
-            # leaving stale lock files that block the new gateway from starting.
-            try:
-                from gateway.status import release_all_scoped_locks
-                _released = release_all_scoped_locks()
-                if _released:
-                    logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
-            except Exception:
-                pass
         else:
             hermes_home = str(get_hermes_home())
             logger.error(
