@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import getpass
 import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -127,9 +129,56 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
+def _parse_external_check_command(check_cmd: object) -> list[str]:
+    """Convert plugin metadata into argv for shell-free execution."""
+    if isinstance(check_cmd, str):
+        stripped = check_cmd.strip()
+        if not stripped:
+            return []
+        return shlex.split(stripped)
+
+    if isinstance(check_cmd, (list, tuple)):
+        return [part for part in check_cmd if isinstance(part, str) and part]
+
+    return []
+
+
+def _external_dependency_is_available(check_cmd: object) -> bool:
+    """Return True when an external dependency probe exits successfully."""
+    try:
+        argv = _parse_external_check_command(check_cmd)
+    except ValueError:
+        return False
+
+    if not argv:
+        return False
+
+    try:
+        subprocess.run(argv, capture_output=True, timeout=5, check=True)
+        return True
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        OSError,
+        PermissionError,
+    ):
+        return False
+
+
+def _report_missing_external_dependencies(ext_deps: list[dict]) -> None:
+    """Print install hints for external tools that are not available."""
+    for dep in ext_deps:
+        dep_name = dep.get("name", "")
+        check_cmd = dep.get("check")
+        install_cmd = dep.get("install", "")
+        if check_cmd and not _external_dependency_is_available(check_cmd):
+            if install_cmd:
+                print(f"\n  Warning: '{dep_name}' not found. Install with:")
+                print(f"    {install_cmd}")
+
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
-    import subprocess
     from pathlib import Path as _Path
 
     plugin_dir = _Path(__file__).parent.parent / "plugins" / "memory" / provider_name
@@ -146,6 +195,7 @@ def _install_dependencies(provider_name: str) -> None:
 
     pip_deps = meta.get("pip_dependencies", [])
     if not pip_deps:
+        _report_missing_external_dependencies(meta.get("external_dependencies", []))
         return
 
     # pip name → import name mapping for packages where they differ
@@ -166,6 +216,7 @@ def _install_dependencies(provider_name: str) -> None:
             missing.append(dep)
 
     if not missing:
+        _report_missing_external_dependencies(meta.get("external_dependencies", []))
         return
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
@@ -176,6 +227,7 @@ def _install_dependencies(provider_name: str) -> None:
         print(f"  ⚠ uv not found — cannot install dependencies")
         print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
         print(f"  Then re-run: hermes memory setup")
+        _report_missing_external_dependencies(meta.get("external_dependencies", []))
         return
 
     try:
@@ -199,17 +251,12 @@ def _install_dependencies(provider_name: str) -> None:
     ext_deps = meta.get("external_dependencies", [])
     for dep in ext_deps:
         dep_name = dep.get("name", "")
-        check_cmd = dep.get("check", "")
+        check_cmd = dep.get("check")
         install_cmd = dep.get("install", "")
-        if check_cmd:
-            try:
-                subprocess.run(
-                    check_cmd, shell=True, capture_output=True, timeout=5
-                )
-            except Exception:
-                if install_cmd:
-                    print(f"\n  ⚠ '{dep_name}' not found. Install with:")
-                    print(f"    {install_cmd}")
+        if check_cmd and not _external_dependency_is_available(check_cmd):
+            if install_cmd:
+                print(f"\n  Warning: '{dep_name}' not found. Install with:")
+                print(f"    {install_cmd}")
 
 
 def _get_available_providers() -> list:
