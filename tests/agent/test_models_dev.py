@@ -6,6 +6,7 @@ import pytest
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
+    _model_id_variants,
     fetch_models_dev,
     lookup_models_dev_context,
 )
@@ -109,6 +110,20 @@ class TestExtractContext:
         assert _extract_context({"limit": {"context": 131072.0}}) == 131072
 
 
+class TestModelIdVariants:
+    def test_adds_hyphenated_variant_for_dot_versions(self):
+        assert _model_id_variants("claude-opus-4.6") == (
+            "claude-opus-4.6",
+            "claude-opus-4-6",
+        )
+
+    def test_adds_dotted_variant_for_hyphen_versions(self):
+        assert _model_id_variants("claude-opus-4-6") == (
+            "claude-opus-4-6",
+            "claude-opus-4.6",
+        )
+
+
 class TestLookupModelsDevContext:
     @patch("agent.models_dev.fetch_models_dev")
     def test_exact_match(self, mock_fetch):
@@ -119,6 +134,16 @@ class TestLookupModelsDevContext:
     def test_case_insensitive_match(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_REGISTRY
         assert lookup_models_dev_context("anthropic", "Claude-Opus-4-6") == 1000000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_matches_dot_version_against_hyphenated_registry_entry(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("anthropic", "claude-opus-4.6") == 1000000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_matches_hyphen_version_against_dotted_registry_entry(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("copilot", "claude-opus-4-6") == 128000
 
     @patch("agent.models_dev.fetch_models_dev")
     def test_provider_not_mapped(self, mock_fetch):

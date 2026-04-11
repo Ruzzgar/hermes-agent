@@ -22,6 +22,7 @@ import difflib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -171,6 +172,8 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
 
 # Reverse mapping: models.dev → Hermes (built lazily)
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
+_VERSION_DOT_RE = re.compile(r"(?<=\d)\.(?=\d)")
+_VERSION_HYPHEN_RE = re.compile(r"(?<=\d)-(?=\d)")
 
 
 def _get_reverse_mapping() -> Dict[str, str]:
@@ -179,6 +182,21 @@ def _get_reverse_mapping() -> Dict[str, str]:
     if _MODELS_DEV_TO_PROVIDER is None:
         _MODELS_DEV_TO_PROVIDER = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
     return _MODELS_DEV_TO_PROVIDER
+
+
+def _model_id_variants(model: str) -> Tuple[str, ...]:
+    """Return lookup variants for providers that disagree on version separators."""
+    variants = [model]
+
+    dotted = _VERSION_HYPHEN_RE.sub(".", model)
+    if dotted != model:
+        variants.append(dotted)
+
+    hyphenated = _VERSION_DOT_RE.sub("-", model)
+    if hyphenated != model:
+        variants.append(hyphenated)
+
+    return tuple(dict.fromkeys(variants))
 
 
 def _get_cache_path() -> Path:
@@ -271,17 +289,17 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     if not isinstance(models, dict):
         return None
 
-    # Exact match
-    entry = models.get(model)
-    if entry:
-        ctx = _extract_context(entry)
-        if ctx:
-            return ctx
+    for candidate in _model_id_variants(model):
+        entry = models.get(candidate)
+        if entry:
+            ctx = _extract_context(entry)
+            if ctx:
+                return ctx
 
     # Case-insensitive match
-    model_lower = model.lower()
+    model_variants = {candidate.lower() for candidate in _model_id_variants(model)}
     for mid, mdata in models.items():
-        if mid.lower() == model_lower:
+        if mid.lower() in model_variants:
             ctx = _extract_context(mdata)
             if ctx:
                 return ctx

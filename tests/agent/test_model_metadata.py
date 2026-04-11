@@ -370,6 +370,18 @@ class TestGetModelContextLength:
 
         assert result == 200000
 
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=1000000)
+    def test_provider_aware_models_dev_lookup_handles_anthropic_dot_versions(self, mock_lookup, mock_fetch):
+        result = get_model_context_length(
+            "claude-opus-4.6",
+            provider="anthropic",
+            base_url="https://example.invalid/v1",
+        )
+
+        assert result == 1000000
+        mock_lookup.assert_called_once_with("anthropic", "claude-opus-4.6")
+
 
 # =========================================================================
 # _strip_provider_prefix — Ollama model:tag vs provider:model
