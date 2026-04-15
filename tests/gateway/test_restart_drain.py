@@ -1,14 +1,16 @@
 import asyncio
 import shutil
 import subprocess
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import gateway.run as gateway_run
+from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
-from gateway.session import build_session_key
+from gateway.session import SessionEntry, SessionSource, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -207,6 +209,47 @@ async def test_shutdown_notification_deduplicates_per_chat():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_does_not_treat_group_user_id_as_thread():
+    """A per-user group session suffix is a user_id, not a thread_id."""
+    runner, adapter = make_restart_runner()
+    runner._running_agents["agent:main:telegram:group:chat1:u1"] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent_metadata == [None]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_uses_origin_thread_metadata():
+    """Persisted session origin provides reliable thread routing metadata."""
+    runner, adapter = make_restart_runner()
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat1",
+        chat_type="group",
+        thread_id="topic-42",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.session_store._entries = {
+        session_key: SessionEntry(
+            session_key=session_key,
+            session_id="session-1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+        )
+    }
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent_metadata == [{"thread_id": "topic-42"}]
 
 
 @pytest.mark.asyncio

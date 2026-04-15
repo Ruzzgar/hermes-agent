@@ -12,6 +12,7 @@ class RestartTestAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
         self.sent: list[str] = []
+        self.sent_metadata: list[object] = []
 
     async def connect(self):
         return True
@@ -21,6 +22,7 @@ class RestartTestAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent.append(content)
+        self.sent_metadata.append(metadata)
         return SendResult(success=True, message_id="1")
 
     async def send_typing(self, chat_id, metadata=None):

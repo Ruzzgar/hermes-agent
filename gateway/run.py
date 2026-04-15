@@ -1411,15 +1411,43 @@ class GatewayRunner:
         )
         msg = f"⚠️ Gateway {action} — {hint}"
 
+        def _source_for_session_key(session_key: str) -> Optional[SessionSource]:
+            """Return persisted origin metadata for *session_key*, if available."""
+            try:
+                entries = getattr(getattr(self, "session_store", None), "_entries", None)
+                if isinstance(entries, dict):
+                    entry = entries.get(session_key)
+                    origin = getattr(entry, "origin", None) if entry else None
+                    if isinstance(origin, SessionSource):
+                        return origin
+            except Exception:
+                pass
+            return None
+
         notified: set = set()
         for session_key in active:
-            # Parse platform + chat_id from the session key.
-            # Format: agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]
-            parts = session_key.split(":")
-            if len(parts) < 5:
-                continue
-            platform_str = parts[2]
-            chat_id = parts[4]
+            origin = _source_for_session_key(session_key)
+            if origin is not None:
+                platform_str = origin.platform.value
+                chat_id = origin.chat_id
+                thread_id = origin.thread_id
+            else:
+                # Fallback for legacy/in-memory entries without origin metadata.
+                # Format: agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]
+                # For group/channel sessions the extra field may be a user_id
+                # rather than a thread_id, so only infer thread metadata for
+                # key shapes where the suffix is unambiguous.
+                parts = session_key.split(":")
+                if len(parts) < 5:
+                    continue
+                platform_str = parts[2]
+                chat_type = parts[3]
+                chat_id = parts[4]
+                thread_id = (
+                    parts[5]
+                    if chat_type in ("dm", "thread") and len(parts) > 5
+                    else None
+                )
 
             # Deduplicate: one notification per chat, even if multiple
             # sessions (different users/threads) share the same chat.
@@ -1435,7 +1463,6 @@ class GatewayRunner:
 
                 # Include thread_id if present so the message lands in the
                 # correct forum topic / thread.
-                thread_id = parts[5] if len(parts) > 5 else None
                 metadata = {"thread_id": thread_id} if thread_id else None
 
                 await adapter.send(chat_id, msg, metadata=metadata)
