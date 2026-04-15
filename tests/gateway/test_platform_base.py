@@ -321,6 +321,18 @@ class TestExtractMedia:
         assert "Here" in cleaned
         assert "After" in cleaned
 
+    def test_media_tag_supports_windows_absolute_paths(self):
+        content = (
+            "MEDIA:C:/Users/Simba/Pictures/shot.png\n"
+            r"MEDIA:C:\Users\Simba\Music\voice.ogg"
+        )
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("C:/Users/Simba/Pictures/shot.png", False),
+            (r"C:\Users\Simba\Music\voice.ogg", False),
+        ]
+        assert cleaned == ""
+
 
 # ---------------------------------------------------------------------------
 # truncate_message

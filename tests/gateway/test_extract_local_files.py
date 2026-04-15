@@ -104,6 +104,25 @@ class TestBasicDetection:
         paths, _ = _extract("File at /tmp/my-screenshot-2024.png done")
         assert paths == ["/tmp/my-screenshot-2024.png"]
 
+    def test_windows_absolute_paths(self):
+        text = (
+            r"Screenshot at C:\Users\Simba\Pictures\shot.png "
+            r"and clip at D:/Media/clip.mp4"
+        )
+        paths, cleaned = _extract(
+            text,
+            existing_files={
+                r"C:\Users\Simba\Pictures\shot.png",
+                "D:/Media/clip.mp4",
+            },
+        )
+        assert paths == [
+            r"C:\Users\Simba\Pictures\shot.png",
+            "D:/Media/clip.mp4",
+        ]
+        assert r"C:\Users\Simba\Pictures\shot.png" not in cleaned
+        assert "D:/Media/clip.mp4" not in cleaned
+
 
 # ---------------------------------------------------------------------------
 # Non-existent files are skipped
@@ -278,10 +297,14 @@ class TestEdgeCases:
         paths, _ = _extract("File at /tmp/my file.png here")
         assert paths == []
 
-    def test_windows_path_not_matched(self):
-        """Windows-style paths should not match."""
-        paths, _ = _extract("See C:\\Users\\test\\image.png")
-        assert paths == []
+    def test_windows_path_matched(self):
+        """Windows-style absolute paths should be matched."""
+        paths, cleaned = _extract(
+            r"See C:\Users\test\image.png",
+            existing_files={r"C:\Users\test\image.png"},
+        )
+        assert paths == [r"C:\Users\test\image.png"]
+        assert r"C:\Users\test\image.png" not in cleaned
 
     def test_relative_path_not_matched(self):
         """Relative paths like ./image.png should not match."""
