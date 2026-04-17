@@ -627,6 +627,17 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
+    def test_direct_anthropic_compatible_endpoint_uses_anthropic_messages(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "claude-opus-4-6",
+            "base_url": "https://example.services.ai.azure.com/models/anthropic",
+            "api_key": "foundry-key",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
     def test_direct_endpoint_falls_back_to_openai_api_key_env(self):
         parent = _make_mock_parent(depth=0)
         cfg = {
