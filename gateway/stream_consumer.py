@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from gateway.platforms.base import _MEDIA_TAG_RE
+
 logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
@@ -405,6 +407,17 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(
                                 self._accumulated, finalize=True,
                             )
+                            if (
+                                not self._final_response_sent
+                                and self._already_sent
+                                and self._message_id not in (None, "__no_edit__")
+                            ):
+                                # End-of-stream is the last chance to deliver
+                                # any unsent tail. If finalize=True still hits
+                                # flood control/backoff, stop waiting and send
+                                # the missing continuation once.
+                                self._fallback_prefix = self._visible_prefix()
+                                await self._send_fallback_final(self._accumulated)
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                     return
@@ -454,10 +467,9 @@ class GatewayStreamConsumer:
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
-    # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
-    # Matches the simple cleanup regex used by the non-streaming path in
-    # gateway/platforms/base.py for post-processing.
-    _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    # Reuse the same MEDIA parser as the non-streaming path so quoted paths
+    # and spaces are stripped consistently from visible text.
+    _MEDIA_RE = _MEDIA_TAG_RE
 
     @staticmethod
     def _clean_for_display(text: str) -> str:

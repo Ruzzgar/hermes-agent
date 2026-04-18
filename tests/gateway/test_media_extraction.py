@@ -10,6 +10,8 @@ times per reply. (Regression test for #160)
 import pytest
 import re
 
+from gateway.platforms.base import extract_media_tag_paths
+
 
 def extract_media_tags_fixed(result_messages, history_len):
     """
@@ -33,10 +35,8 @@ def extract_media_tags_fixed(result_messages, history_len):
         if msg.get("role") == "tool" or msg.get("role") == "function":
             content = msg.get("content", "")
             if "MEDIA:" in content:
-                for match in re.finditer(r'MEDIA:(\S+)', content):
-                    path = match.group(1).strip().rstrip('",}')
-                    if path:
-                        media_tags.append(f"MEDIA:{path}")
+                for path in extract_media_tag_paths(content):
+                    media_tags.append(f"MEDIA:{path}")
                 if "[[audio_as_voice]]" in content:
                     has_voice_directive = True
     
@@ -178,6 +178,21 @@ class TestMediaExtraction:
         seen = set()
         unique = [t for t in tags if t not in seen and not seen.add(t)]
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
+
+    def test_quoted_media_paths_with_spaces_parse_as_single_path(self):
+        """Quoted MEDIA paths with spaces should match the gateway parser."""
+        history = [
+            {"role": "tool", "tool_call_id": "1", "content": "MEDIA: '/tmp/my image.png'"},
+        ]
+        new_messages = [
+            {"role": "tool", "tool_call_id": "2", "content": "MEDIA: '/tmp/my image.png'"},
+        ]
+
+        fixed_tags, _ = extract_media_tags_fixed(history + new_messages, len(history))
+        broken_tags, _ = extract_media_tags_broken(history + new_messages)
+
+        assert fixed_tags == ["MEDIA:/tmp/my image.png"]
+        assert broken_tags != fixed_tags
 
 
 if __name__ == "__main__":

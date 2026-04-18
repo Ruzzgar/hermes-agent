@@ -41,6 +41,15 @@ class TestCleanForDisplay:
             result = GatewayStreamConsumer._clean_for_display(text)
             assert "MEDIA:" not in result, f"Failed for wrapper: {wrapper}"
 
+    def test_media_tag_with_quoted_path_and_spaces(self):
+        """Quoted MEDIA paths with spaces should be stripped as one directive."""
+        text = "Here\nMEDIA: '/tmp/my image.png'\nAfter"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "MEDIA:" not in result
+        assert "Here" in result
+        assert "After" in result
+        assert "my image.png" not in result
+
     def test_audio_as_voice_stripped(self):
         """[[audio_as_voice]] directive is removed."""
         text = "[[audio_as_voice]]\nMEDIA:/tmp/voice.ogg"

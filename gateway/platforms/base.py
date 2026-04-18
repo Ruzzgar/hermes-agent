@@ -20,6 +20,30 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
+_MEDIA_PATH_EXTS = (
+    "png", "jpg", "jpeg", "gif", "webp",
+    "mp4", "mov", "avi", "mkv", "webm",
+    "ogg", "opus", "mp3", "wav", "m4a",
+)
+_MEDIA_TAG_RE = re.compile(
+    r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:'''
+    + "|".join(_MEDIA_PATH_EXTS)
+    + r''')(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+)
+
+
+def extract_media_tag_paths(content: str) -> list[str]:
+    """Return normalized MEDIA tag paths without expanding ``~``."""
+    media_paths = []
+    for match in _MEDIA_TAG_RE.finditer(content):
+        path = match.group("path").strip()
+        if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+            path = path[1:-1].strip()
+        path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+        if path:
+            media_paths.append(path)
+    return media_paths
+
 
 def utf16_len(s: str) -> int:
     """Count UTF-16 code units in *s*.
@@ -1313,22 +1337,12 @@ class BasePlatformAdapter(ABC):
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
         
-        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
-        )
-        for match in media_pattern.finditer(content):
-            path = match.group("path").strip()
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-                path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+        for path in extract_media_tag_paths(content):
+            media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
-            cleaned = media_pattern.sub('', cleaned)
+            cleaned = _MEDIA_TAG_RE.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
