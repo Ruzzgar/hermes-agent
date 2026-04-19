@@ -233,6 +233,29 @@ class TestBackup:
         zips = list(tmp_path.glob("hermes-backup-*.zip"))
         assert len(zips) == 1
 
+    def test_backup_uses_active_profile_home(self, tmp_path, monkeypatch):
+        """Backup scopes to the active profile instead of the root ~/.hermes."""
+        root_home = tmp_path / ".hermes"
+        profile_home = root_home / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+
+        (root_home / "config.yaml").write_text("model: root\n")
+        (profile_home / "config.yaml").write_text("model: profile\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "profile-backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            config_text = zf.read("config.yaml").decode().replace("\r\n", "\n")
+            assert config_text == "model: profile\n"
+            assert "profiles/coder/config.yaml" not in zf.namelist()
+
 
 # ---------------------------------------------------------------------------
 # _validate_backup_zip tests
@@ -446,6 +469,33 @@ class TestImport:
         from hermes_cli.backup import run_import
         with pytest.raises(SystemExit):
             run_import(args)
+
+    def test_import_uses_active_profile_home(self, tmp_path, monkeypatch):
+        """Import restores into the active profile instead of the root ~/.hermes."""
+        root_home = tmp_path / ".hermes"
+        profile_home = root_home / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+
+        (root_home / "config.yaml").write_text("model: root\n")
+        (profile_home / "config.yaml").write_text("model: existing-profile\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "profile-import.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: imported-profile\n",
+            "skills/my-skill/SKILL.md": "# Imported Skill\n",
+        })
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        run_import(args)
+
+        assert (profile_home / "config.yaml").read_text() == "model: imported-profile\n"
+        assert (profile_home / "skills" / "my-skill" / "SKILL.md").read_text() == "# Imported Skill\n"
+        assert (root_home / "config.yaml").read_text() == "model: root\n"
 
 
 # ---------------------------------------------------------------------------
